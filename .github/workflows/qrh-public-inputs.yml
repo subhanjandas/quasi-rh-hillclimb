@@ -1,0 +1,84 @@
+name: Rebuild public QRH inputs (no result PR)
+on:
+  workflow_dispatch:
+  push:
+    branches: [ci/qrh-public-inputs]
+    paths:
+      - .github/workflows/qrh-public-inputs.yml
+      - tools/qrh-public-inputs/**
+permissions:
+  contents: read
+concurrency:
+  group: qrh-public-inputs
+  cancel-in-progress: false
+jobs:
+  rebuild:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+    steps:
+      - name: Read the reviewed helper
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+          path: helper
+      - name: Read the pinned upstream verifier and already-public proof
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          repository: GTimG/QuasiRiemannTracker
+          ref: 0ce80fdddebb03128d30a917006d8520e7a774b8
+          persist-credentials: false
+          path: protected
+          fetch-depth: 1
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: 22.17.0
+      - name: Make space on the fresh disposable runner
+        run: |
+          sudo rm -rf -- /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/local/.ghcup
+          df -h
+      - name: Install the upstream worker prerequisites
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends meson ninja-build libcap-dev pkg-config zstd libgmp-dev python3-yaml
+          sudo loginctl enable-linger "$(id -un)"
+          echo "XDG_RUNTIME_DIR=/run/user/$(id -u)" >> "$GITHUB_ENV"
+          echo "DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$(id -u)/bus" >> "$GITHUB_ENV"
+      - name: Prepare the existing admitted source at its immutable upstream commit
+        working-directory: protected
+        run: |
+          mkdir -p verification
+          echo '{}' > verification/empty-libraries.json
+          node verifier/standard/prepare.mjs --checkout . --head 0ce80fdddebb03128d30a917006d8520e7a774b8 --repository GTimG/QuasiRiemannTracker --id lewko-acyclic-bootstrap-874772906 --bound 437386453/500000000 --libraries verification/empty-libraries.json --out verification/prepared
+          node -e 'const fs=require("fs");const c=JSON.parse(fs.readFileSync("verification/prepared/contract.json"));fs.writeFileSync("verification/imports.json",JSON.stringify(c.package_imports)+"\n");'
+      - name: Build the pinned Linux checking environment
+        working-directory: protected
+        timeout-minutes: 120
+        run: python3 verifier/actions/setup.py
+      - name: Try the upstream signed compilation cache
+        working-directory: protected
+        continue-on-error: true
+        run: python3 verifier/actions/restore-build.py
+      - name: Generate the source-only dependency compiler from the pinned driver
+        run: python3 helper/tools/qrh-public-inputs/scripts/make_input_builder.py --trusted-checkout protected
+      - name: Rebuild the existing public dependencies under the actual sandbox
+        working-directory: protected
+        env:
+          QRH_WORKER_THREADS: '4'
+          QRH_KERNEL_JOBS: '1'
+        run: |
+          python3 verifier/standard/generated-public-input-builder.py --profile verification/profile.json --prepared verification/prepared --work verification/input-run --tool-pins verification/tool-pins.json --input-roots ../helper/tools/qrh-public-inputs/input-roots.json --cache-out verification/public-input-cache
+      - name: Preserve source-only build evidence and portable compiler products
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: qrh-public-input-build
+          path: |
+            protected/verification/public-input-cache/
+            protected/verification/input-run/logs/
+            protected/verification/input-run/control/
+            protected/verification/input-run/preflight/
+            protected/verification/build-cache-status.json
+            protected/verification/tool-pins.json
+          retention-days: 1
+          compression-level: 0
+          if-no-files-found: warn
