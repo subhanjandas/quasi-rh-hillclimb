@@ -1,0 +1,90 @@
+name: Split the completed public input artifact for transfer
+on:
+  workflow_dispatch:
+  push:
+    branches: [ci/qrh-public-inputs]
+    paths: [.github/workflows/qrh-input-chunks.yml]
+permissions:
+  contents: read
+  actions: read
+jobs:
+  split:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Download the completed public-input artifact without rebuilding
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/12558848704/zip" > original.zip
+      - name: Authenticate original bytes and create bounded transfer parts
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import hashlib,json,os
+          archive=Path('original.zip')
+          expected='f393f5e79b33eea772178ba985ebbd9ecc6d541b0d40c477f1c60cf90b639a64'
+          sha=lambda p:hashlib.file_digest(p.open('rb'),'sha256').hexdigest()
+          assert archive.stat().st_size==1792721467 and sha(archive)==expected
+          out=Path('chunks');out.mkdir();parts=[]
+          with archive.open('rb') as source:
+              index=0
+              while block:=source.read(384*1024**2):
+                  path=out/f'part{index:03}.bin';path.write_bytes(block)
+                  parts.append({'file':path.name,'bytes':len(block),'sha256':sha(path)})
+                  index+=1
+          assert len(parts)==5
+          report={'source_run_id':40081311357,'source_artifact_id':12558848704,
+              'source_helper_commit':'574fa5417eb50df580cf4e28c5bffc5e03d1c01e',
+              'original_bytes':archive.stat().st_size,'original_sha256':expected,
+              'split_helper_commit':os.environ['GITHUB_SHA'],'parts':parts,
+              'candidate_source_included':False,'new_bound_verified':False,
+              'official_admission':False}
+          (out/'manifest.json').write_text(json.dumps(report,indent=2)+'\n')
+          print(json.dumps(report,indent=2))
+          PY
+      - name: Preserve public input part 000
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: qrh-public-input-part-000
+          path: |
+            chunks/part000.bin
+            chunks/manifest.json
+          compression-level: 0
+          retention-days: 1
+      - name: Preserve public input part 001
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: qrh-public-input-part-001
+          path: |
+            chunks/part001.bin
+            chunks/manifest.json
+          compression-level: 0
+          retention-days: 1
+      - name: Preserve public input part 002
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: qrh-public-input-part-002
+          path: |
+            chunks/part002.bin
+            chunks/manifest.json
+          compression-level: 0
+          retention-days: 1
+      - name: Preserve public input part 003
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: qrh-public-input-part-003
+          path: |
+            chunks/part003.bin
+            chunks/manifest.json
+          compression-level: 0
+          retention-days: 1
+      - name: Preserve public input part 004
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: qrh-public-input-part-004
+          path: |
+            chunks/part004.bin
+            chunks/manifest.json
+          compression-level: 0
+          retention-days: 1
