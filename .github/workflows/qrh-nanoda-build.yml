@@ -1,0 +1,82 @@
+name: Build pristine upstream NanoDa for local diagnostics
+on:
+  workflow_dispatch:
+  push:
+    branches: [ci/qrh-public-inputs]
+    paths:
+      - .github/workflows/qrh-nanoda-build.yml
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - name: Read the exact pristine NanoDa revision used by upstream PR 70
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          repository: ammkrn/nanoda_lib
+          ref: 998e0a84e4c1572ca279ff05007af6ec6639405a
+          persist-credentials: false
+          path: nanoda
+      - name: Select the reproducible Rust toolchain
+        run: |
+          rustup toolchain install 1.90.0 --profile minimal
+          rustc +1.90.0 -Vv
+          cargo +1.90.0 --version
+      - name: Fetch only the locked public dependencies
+        working-directory: nanoda
+        run: cargo +1.90.0 fetch --locked
+      - name: Test pristine upstream source with network access disabled in Cargo
+        working-directory: nanoda
+        run: |
+          set -o pipefail
+          cargo +1.90.0 test --locked --offline 2>&1 | tee ../nanoda-tests.log
+      - name: Build the pristine release binary
+        working-directory: nanoda
+        run: |
+          set -o pipefail
+          cargo +1.90.0 build --release --locked --offline 2>&1 | tee ../nanoda-build.log
+          git diff --exit-code
+          git diff --cached --exit-code
+      - name: Record source, compiler, license and binary identities
+        run: |
+          mkdir -p diagnostic-nanoda
+          cp nanoda/target/release/nanoda_bin diagnostic-nanoda/
+          cp nanoda/Cargo.lock nanoda/Cargo.toml diagnostic-nanoda/
+          cp nanoda-tests.log nanoda-build.log diagnostic-nanoda/
+          python3 - <<'PY'
+          from pathlib import Path
+          import hashlib,json,shutil,subprocess,tomllib
+          source=Path('nanoda');out=Path('diagnostic-nanoda')
+          revision=subprocess.check_output(['git','-C',str(source),'rev-parse','HEAD'],text=True).strip()
+          assert revision=='998e0a84e4c1572ca279ff05007af6ec6639405a'
+          package=tomllib.loads((source/'Cargo.toml').read_text())['package']
+          assert package['version']=='0.4.26' and package['license']=='Apache-2.0'
+          licenses=list(source.glob('LICENSE*'));assert licenses
+          for path in licenses:
+              if path.is_file():shutil.copyfile(path,out/path.name)
+          sha=lambda p:hashlib.file_digest(p.open('rb'),'sha256').hexdigest()
+          report={'scope':'Pristine upstream checker build for local diagnostics only',
+              'source_repository':'ammkrn/nanoda_lib','source_revision':revision,
+              'version':package['version'],'license':package['license'],
+              'source_changes':False,'cargo_locked':True,'tests_passed':True,
+              'rustc':subprocess.check_output(['rustc','+1.90.0','-Vv'],text=True),
+              'cargo':subprocess.check_output(['cargo','+1.90.0','--version'],text=True).strip(),
+              'binary_sha256':sha(out/'nanoda_bin'),'cargo_lock_sha256':sha(out/'Cargo.lock'),
+              'official_tracker_tool_pins_changed':False,
+              'candidate_source_included':False,'new_bound_verified':False,'official_admission':False}
+          (out/'build-report.json').write_text(json.dumps(report,indent=2)+'\n')
+          print(json.dumps(report,indent=2))
+          PY
+      - name: Preserve the tested binary and build evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: pristine-nanoda-0.4.26-diagnostic
+          path: |
+            diagnostic-nanoda/
+            nanoda-tests.log
+            nanoda-build.log
+          retention-days: 1
+          if-no-files-found: warn
